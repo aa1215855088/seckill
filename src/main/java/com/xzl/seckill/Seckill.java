@@ -56,6 +56,16 @@ public class Seckill {
     private String mailReceiver;
 
     /**
+     * 抢购线程数
+     */
+    private String workCount;
+
+    /**
+     * 商品数量
+     */
+    private String num;
+
+    /**
      * 初始化
      */
     public Seckill() {
@@ -108,6 +118,8 @@ public class Seckill {
             this.userAgent = properties.getProperty("User-Agent");
             this.skuId = properties.getProperty("skuId");
             this.mailReceiver = properties.getProperty("mailReceiver");
+            this.workCount = properties.getProperty("work_count");
+            this.num = properties.getProperty("num");
         } catch (IOException e) {
             System.out.println("读取配置文件异常");
         }
