@@ -51,6 +51,11 @@ public class Seckill {
     private String userAgent;
 
     /**
+     * 邮件接收人
+     */
+    private String mailReceiver;
+
+    /**
      * 初始化
      */
     public Seckill() {
@@ -72,13 +77,13 @@ public class Seckill {
             if (response.getStatus() == HttpURLConnection.HTTP_OK) {
                 Document doc = Jsoup.parse(response.body());
                 System.out.println("预约成功>>>>>>>>" + doc.getElementsByClass("bd-right-result").text());
-                MailUtil.send("1215855088@qq.com", "预约成功!!!", "", false);
+                MailUtil.send(this.mailReceiver, "预约成功!!!", "", false);
                 return;
             }
         } catch (HttpException e) {
             System.out.println("预约失败!!!");
         }
-        MailUtil.send("1215855088@qq.com", "预约失败!!!", "", false);
+        MailUtil.send(this.mailReceiver, "预约失败!!!", "请手动预约", false);
     }
 
 
@@ -102,6 +107,7 @@ public class Seckill {
             this.cookie = properties.getProperty("cookie");
             this.userAgent = properties.getProperty("User-Agent");
             this.skuId = properties.getProperty("skuId");
+            this.mailReceiver = properties.getProperty("mailReceiver");
         } catch (IOException e) {
             System.out.println("读取配置文件异常");
         }
@@ -111,7 +117,7 @@ public class Seckill {
      * 登录
      */
     public void login() {
-
+//TODO
     }
 
     /**
