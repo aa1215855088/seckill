@@ -220,8 +220,8 @@ public class Seckill {
                 //开始秒杀
                 try {
                     startSeckill();
-                } catch (Exception e) {
-                    System.out.println("秒杀失败!开始重试.....");
+                } catch (RuntimeException e) {
+                    System.out.println(StrUtil.format("秒杀失败!原因:{}", e.getMessage()));
                 }
             } else if (timeDifference < 0) {
                 System.out.println("活动暂未开始,距离活动开始还剩[" + Math.abs(timeDifference / 1000) + "]s");
@@ -239,12 +239,8 @@ public class Seckill {
      * 开始秒杀-----------
      */
     public void startSeckill() {
-        String seckillUrl = getSeckillUrl();
-        if (StrUtil.isBlank(seckillUrl)) {
-            return;
-        }
         System.out.println("访问商品抢购链接");
-        HttpResponse execute = get(seckillUrl)
+        HttpResponse execute = get(getSeckillUrl())
                 .header(Header.HOST, "marathon.jd.com")
                 .header(Header.REFERER, StrUtil.format("https://item.jd.com/{}.html", this.skuId))
                 .setFollowRedirects(true)
