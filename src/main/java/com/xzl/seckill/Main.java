@@ -1,6 +1,9 @@
 package com.xzl.seckill;
 
 
+import cn.hutool.log.Log;
+import cn.hutool.log.LogFactory;
+
 /**
  * <p>
  * 启动类
@@ -11,9 +14,11 @@ package com.xzl.seckill;
  */
 public class Main {
 
+    private static final Log log = LogFactory.get();
+
 
     public static void main(String[] args) {
-        System.out.println("冲冲冲!!!");
+        log.info(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>start<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
         Seckill seckill = new Seckill();
     }
 }

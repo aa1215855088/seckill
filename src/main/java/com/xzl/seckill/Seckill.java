@@ -1,9 +1,12 @@
 package com.xzl.seckill;
 
+import cn.hutool.cache.CacheUtil;
+import cn.hutool.cache.impl.TimedCache;
 import cn.hutool.core.date.DateField;
 import cn.hutool.core.date.DateTime;
 import cn.hutool.core.date.DateUtil;
 import cn.hutool.core.io.resource.ResourceUtil;
+import cn.hutool.core.thread.ThreadFactoryBuilder;
 import cn.hutool.core.thread.ThreadUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
@@ -16,6 +19,8 @@ import cn.hutool.http.HttpRequest;
 import cn.hutool.http.HttpResponse;
 import cn.hutool.http.HttpStatus;
 import cn.hutool.http.HttpUtil;
+import cn.hutool.log.Log;
+import cn.hutool.log.LogFactory;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.google.common.collect.Maps;
@@ -44,6 +49,7 @@ import java.util.concurrent.ScheduledExecutorService;
  */
 public class Seckill {
 
+    private static final Log log = LogFactory.get();
     /**
      * 后台任务线程
      */
@@ -52,7 +58,18 @@ public class Seckill {
     /**
      * 线程池
      */
-    ExecutorService executorService = ThreadUtil.newExecutor();
+    ExecutorService executorService = Executors.newCachedThreadPool(
+            ThreadFactoryBuilder.create().setNamePrefix("jd-seckill-").build());
+
+    /**
+     * 本地缓存
+     */
+    Map<String, Object> cache = Maps.newConcurrentMap();
+
+    /**
+     * 限时缓存
+     */
+    TimedCache<String, Map<String, Object>> timedCache = CacheUtil.newTimedCache(24 * 60 * 60 * 1000);
 
     /**
      * 商品标题
@@ -114,12 +131,9 @@ public class Seckill {
     public Seckill() {
         initConfig();
 
-        //秒杀任务
-        executorService.execute(() -> {
-            for (int i = 0; i < workCount; i++) {
-                executorService.execute(this::seckill);
-            }
-        });
+        initSeckillThread();
+
+        initSeckillData();
 
         //预约任务
         CronUtil.schedule(this.reservationCron, (Task) () -> {
@@ -130,10 +144,10 @@ public class Seckill {
 
         //cookie检查任务
         CronUtil.schedule(this.cookieCron, (Task) () -> {
-            System.out.println(">>>>>>>>>>>>>>>>>>>>开始检测cookie是否失效<<<<<<<<<<<<<<<<<<<<<<<");
+            log.info(">>>>>>>>>>>>>>>>>>>>开始检测cookie是否失效<<<<<<<<<<<<<<<<<<<<<<<");
             if (!checkLogin()) {
                 MailUtil.send(mailReceiver, "cookie过期", "请手动获取", false);
-                System.out.println(">>>>>>>>>>>>>>>>>>>>cookie失效系统自动退出<<<<<<<<<<<<<<<<<<<<<<<");
+                log.info(">>>>>>>>>>>>>>>>>>>>cookie失效系统自动退出<<<<<<<<<<<<<<<<<<<<<<<");
                 close();
             }
         });
@@ -143,7 +157,7 @@ public class Seckill {
             taskThread.shutdown();
             CronUtil.stop();
             executorService.shutdown();
-            System.out.println("系统退出!!!");
+            log.info("系统退出!!!");
         }));
 
         // 支持秒级别定时任务
@@ -151,8 +165,23 @@ public class Seckill {
         CronUtil.start();
     }
 
+    private void initSeckillData() {
+        log.info(">>>>>>>>>>>>>>>>>>>>开始初始化提交订单数据<<<<<<<<<<<<<<<<<<<<<<<");
+        while (true) {
+            try {
+                if (Objects.nonNull(getSeckillOrderData())) {
+                    return;
+                }
+            } catch (RuntimeException e) {
+                log.info("初始化提交订单数据失败:{}", e.getMessage());
+            }
+        }
+
+    }
+
 
     private void initConfig() {
+        log.info(">>>>>>>>>>>>>>>>>>>>开始读取配置文件<<<<<<<<<<<<<<<<<<<<<<<");
         try {
             InputStream in = ResourceUtil.getStream("config.properties");
             Properties properties = new Properties();
@@ -169,7 +198,14 @@ public class Seckill {
             this.workCount = Integer.parseInt(properties.getProperty("work_count", "5"));
             this.num = Integer.parseInt(properties.getProperty("num", "2"));
         } catch (IOException e) {
-            System.out.println("读取配置文件异常");
+            log.info("读取配置文件异常:{}", e.getMessage());
+        }
+    }
+
+    private void initSeckillThread() {
+        log.info(">>>>>>>>>>>>>>>>>>>>开始初始化秒杀线程-workCount:[{}]<<<<<<<<<<<<<<<<<<<<<<<", this.workCount);
+        for (int i = 0; i < workCount; i++) {
+            executorService.execute(this::seckill);
         }
     }
 
@@ -187,7 +223,7 @@ public class Seckill {
      * 预约
      */
     public void reservation() {
-        System.out.println(StrUtil.format("开始预约>>>>>>>>>>>>>>商品名称:{}", getTitle()));
+        log.info(StrUtil.format("开始预约>>>>>>>>>>>>>>商品名称:{}", getTitle()));
         String url = "https://yushou.jd.com/youshouinfo.action";
         try {
             HttpResponse execute = get(url)
@@ -198,12 +234,12 @@ public class Seckill {
             HttpResponse response = get("https:" + redirectUrl).execute();
             if (response.getStatus() == HttpStatus.HTTP_OK) {
                 Document doc = Jsoup.parse(response.body());
-                System.out.println("预约成功>>>>>>>>" + doc.getElementsByClass("bd-right-result").text());
+                log.info("预约成功>>>>>>>>" + doc.getElementsByClass("bd-right-result").text());
                 MailUtil.send(this.mailReceiver, "预约成功!!!", "", false);
                 return;
             }
         } catch (HttpException e) {
-            System.out.println("预约失败!!!");
+            log.info("预约失败!!!");
         }
         MailUtil.send(this.mailReceiver, "预约失败!!!", "请手动预约", false);
     }
@@ -212,25 +248,31 @@ public class Seckill {
      * 秒杀抢购
      */
     public void seckill() {
-        System.out.println(StrUtil.format("开始抢购>>>>>>>>>>>>>>商品名称:{}", getTitle()));
+        log.info("开始抢购>>>>>>>>>>>>>>商品名称:{}", getTitle());
         while (true) {
             long timeDifference = getJdServerTime() - getBuyTime();
-            //默认抢60s
-            if (timeDifference >= 0 && timeDifference <= 60 * 1000) {
+            //默认抢2分钟
+            if (timeDifference >= 0 && timeDifference <= 120 * 1000) {
                 //开始秒杀
                 try {
                     startSeckill();
                 } catch (RuntimeException e) {
-                    System.out.println(StrUtil.format("秒杀失败!原因:{}", e.getMessage()));
+                    log.info("秒杀失败!原因:{}", e.getMessage());
                 }
             } else if (timeDifference < 0) {
-                System.out.println("活动暂未开始,距离活动开始还剩[" + Math.abs(timeDifference / 1000) + "]s");
+                log.info("活动暂未开始,距离活动开始还剩[{}]s", Math.abs(timeDifference / 1000));
                 ThreadUtil.sleep(Math.abs(timeDifference));
             } else {
-                System.out.println("今日活动已结束");
-                //计算距离第二天活动开始相差时间
+                log.info("今日活动已结束");
+                //获取第二天获得开始时间戳
                 DateTime offset = DateUtil.offset(new Date(getBuyTime()), DateField.DAY_OF_YEAR, 1);
-                ThreadUtil.sleep(offset.getTime() - timeDifference);
+
+                long sleepTime = getLastTime() - getJdServerTime();
+                if (DateUtil.dayOfWeek(new Date()) == 6) {
+                    sleepTime += 2 * (24 * 60 * 60 * 1000);
+                }
+                //如果是星期五直接休息两天
+                ThreadUtil.sleep(sleepTime);
             }
         }
     }
@@ -239,14 +281,20 @@ public class Seckill {
      * 开始秒杀-----------
      */
     public void startSeckill() {
-        System.out.println("访问商品抢购链接");
-        HttpResponse execute = get(getSeckillUrl())
-                .header(Header.HOST, "marathon.jd.com")
-                .header(Header.REFERER, StrUtil.format("https://item.jd.com/{}.html", this.skuId))
-                .setFollowRedirects(true)
-                .execute();
-        //请求抢购结算结算
-        requestSeckillCheckOutPage();
+        executorService.execute(() -> {
+            log.info("访问商品抢购链接");
+            try {
+                HttpResponse execute = get(getSeckillUrl())
+                        .header(Header.HOST, "marathon.jd.com")
+                        .header(Header.REFERER, StrUtil.format("https://item.jd.com/{}.html", this.skuId))
+                        .setFollowRedirects(false)
+                        .execute();
+            } catch (Exception e) {
+                log.info("访问商品抢购链接失败");
+            }
+            //请求抢购结算结算
+            requestSeckillCheckOutPage();
+        });
         //提交抢购订单
         submitSeckillOrder();
     }
@@ -255,10 +303,10 @@ public class Seckill {
      * 提交seckill订单
      */
     public void submitSeckillOrder() {
-        String url = "https://marathon.jd.com/seckillnew/orderService/pc/submitOrder.action";
+        String url = "https://marathon.jd.com/seckillnew/orderService/pc/submitOrder.action?skuId=" + this.skuId;
         try {
             Map<String, Object> data = getSeckillOrderData();
-            System.out.println(JSON.toJSONString(data));
+            log.info(JSON.toJSONString(data));
             HttpResponse execute = post(url)
                     .header(Header.HOST, "marathon.jd.com")
                     .header(Header.REFERER, StrUtil.format("https://marathon.jd.com/seckill/seckill" +
@@ -267,12 +315,12 @@ public class Seckill {
                     .execute();
             JSONObject result = JSON.parseObject(execute.body());
             if (result.getBoolean("success")) {
-                System.out.println("抢购成功");
+                log.info("抢购成功");
                 MailUtil.send(this.mailReceiver, "抢购成功!!!", getTitle() + "抢购成功,请赶快结算订单", false);
             }
-            System.out.println(result);
+            log.info(result.toJSONString());
         } catch (HttpException e) {
-            System.out.println("抢购失败!!!");
+            log.info("抢购失败!!!");
         }
     }
 
@@ -282,10 +330,19 @@ public class Seckill {
      * @return {@link Map<String, Object>}
      */
     public Map<String, Object> getSeckillOrderData() {
+        Map<String, Object> cacheData = timedCache.get(this.skuId);
+        if (Objects.nonNull(cacheData)) {
+            return cacheData;
+        }
         JSONObject info = getSeckillInitInfo();
-        System.out.println("生成秒杀提交订单所需参数");
+        if (Objects.isNull(info)) {
+            throw new RuntimeException("获取订单提交参数异常....");
+        }
+        log.info("生成秒杀提交订单所需参数");
         Map<String, Object> data = Maps.newHashMap();
+        //默认地址
         JSONObject address = info.getJSONArray("addressList").getJSONObject(0);
+        //发票信息
         JSONObject invoiceInfo = info.getJSONObject("invoiceInfo");
         data.put("skuId", this.skuId);
         data.put("num", this.num);
@@ -302,17 +359,14 @@ public class Seckill {
         data.put("mobileKey", address.get("mobileKey"));
         data.put("email", "");
         data.put("postCode", "");
-        if (Objects.nonNull(invoiceInfo)) {
-            data.put("invoiceTitle", invoiceInfo.getOrDefault("invoiceTitle", -1));
-            data.put("invoiceCompanyName", "");
-            data.put("invoiceContent", invoiceInfo.getOrDefault("invoiceContent", 1));
-            data.put("invoiceTaxpayerNO", "");
-            data.put("invoiceEmail", "");
-            data.put("invoicePhone", invoiceInfo.getOrDefault("invoicePhone", ""));
-            data.put("invoicePhoneKey", invoiceInfo.getOrDefault("invoicePhoneKey", ""));
-            data.put("invoice", true);
-        }
-        data.put("invoice", false);
+        data.put("invoiceTitle", invoiceInfo.getOrDefault("invoiceTitle", -1));
+        data.put("invoiceCompanyName", "");
+        data.put("invoiceContent", invoiceInfo.getOrDefault("invoiceContent", 1));
+        data.put("invoiceTaxpayerNO", "");
+        data.put("invoiceEmail", "");
+        data.put("invoicePhone", invoiceInfo.getOrDefault("invoicePhone", ""));
+        data.put("invoicePhoneKey", invoiceInfo.getOrDefault("invoicePhoneKey", ""));
+        data.put("invoice", true);
         data.put("password", "");
         data.put("codTimeType", 3);
         data.put("paymentType", 4);
@@ -323,7 +377,8 @@ public class Seckill {
         data.put("fp", this.fp);
         data.put("token", info.get("token"));
         data.put("pru", "");
-        System.out.println(StrUtil.format("抢购参数:{}", JSON.toJSONString(data)));
+        log.info(StrUtil.format("抢购参数:{}", JSON.toJSONString(data)));
+        timedCache.put(this.skuId, data);
         return data;
     }
 
@@ -333,7 +388,7 @@ public class Seckill {
      * @return JSONObject
      */
     public JSONObject getSeckillInitInfo() {
-        System.out.println("获取秒杀初始化信息....");
+        log.info("获取秒杀初始化信息....");
         String url = "https://marathon.jd.com/seckillnew/orderService/pc/init.action";
         Map<String, Object> data = Maps.newHashMap();
         data.put("sku", this.skuId);
@@ -350,17 +405,17 @@ public class Seckill {
      * 请求seckill结算页面
      */
     private void requestSeckillCheckOutPage() {
-        System.out.println(">>>>>>>>>>>访问订单结算页面<<<<<<<<<<");
-        String url = "https://marathon.jd.com/seckill/seckill.action";
-        Map<String, Object> param = Maps.newHashMap();
-        param.put("num", this.num);
-        param.put("skuId", this.skuId);
-        param.put("rid", DateUtil.current());
-        HttpResponse execute = get(url)
-                .header(Header.HOST, "marathon.jd.com")
-                .header(Header.REFERER, StrUtil.format("https://item.jd.com/{}.html", this.skuId))
-                .form(param)
-                .execute();
+        log.info(">>>>>>>>>>>访问订单结算页面<<<<<<<<<<");
+        String url = StrUtil.format("https://marathon.jd.com/seckill/seckill.action?skuId={}&num={}&rid={}"
+                , this.skuId, this.num, DateUtil.current());
+        try {
+            HttpResponse execute = get(url)
+                    .header(Header.HOST, "marathon.jd.com")
+                    .header(Header.REFERER, StrUtil.format("https://item.jd.com/{}.html", this.skuId))
+                    .execute();
+        } catch (Exception e) {
+            log.info("访问订单结算页面失败");
+        }
     }
 
 
@@ -385,11 +440,10 @@ public class Seckill {
         String jsonStr = parseJson(execute.body());
         String routerUrl = JSON.parseObject(jsonStr).getString("url");
         if (StrUtil.isNotBlank(routerUrl)) {
-            String result = HttpUtil.get("https:" + routerUrl);
-            String seckillUrl = result
+            String seckillUrl = routerUrl
                     .replace("divide", "marathon")
                     .replace("user_routing", "captcha.html");
-            System.out.println(StrUtil.format("获取抢购链接成功:{}", seckillUrl));
+            log.info(StrUtil.format("获取抢购链接成功:{}", seckillUrl));
             return seckillUrl;
         }
         ThreadUtil.sleep(RandomUtil.randomInt(100, 300));
@@ -483,6 +537,19 @@ public class Seckill {
         return time.getTime().getTime();
     }
 
+    /**
+     * 获取今天最后的时间戳
+     *
+     * @return long
+     */
+    public long getLastTime() {
+        Calendar time = Calendar.getInstance();
+        time.set(Calendar.HOUR_OF_DAY, 24);
+        time.set(Calendar.MINUTE, 0);
+        time.set(Calendar.SECOND, 0);
+        time.set(Calendar.MILLISECOND, 0);
+        return time.getTime().getTime();
+    }
 
     /**
      * 关机
