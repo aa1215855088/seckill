@@ -131,9 +131,9 @@ public class Seckill {
     public Seckill() {
         initConfig();
 
-        initSeckillThread();
-
         initSeckillData();
+
+        initSeckillThread();
 
         //预约任务
         CronUtil.schedule(this.reservationCron, (Task) () -> {
