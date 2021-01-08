@@ -56,7 +56,7 @@ public class Seckill {
     ScheduledExecutorService taskThread = Executors.newSingleThreadScheduledExecutor();
 
     /**
-     * 线程池
+     * 秒杀线程池
      */
     ExecutorService executorService = Executors.newCachedThreadPool(
             ThreadFactoryBuilder.create().setNamePrefix("jd-seckill-").build());
@@ -174,6 +174,7 @@ public class Seckill {
                 }
             } catch (RuntimeException e) {
                 log.info("初始化提交订单数据失败:{}", e.getMessage());
+                ThreadUtil.sleep(RandomUtil.randomInt(1000, 3000));
             }
         }
 
@@ -234,7 +235,7 @@ public class Seckill {
             HttpResponse response = get("https:" + redirectUrl).execute();
             if (response.getStatus() == HttpStatus.HTTP_OK) {
                 Document doc = Jsoup.parse(response.body());
-                log.info("预约成功>>>>>>>>" + doc.getElementsByClass("bd-right-result").text());
+                log.info("预约成功>>>>>>>>{}",doc.getElementsByClass("bd-right-result").text());
                 MailUtil.send(this.mailReceiver, "预约成功!!!", "", false);
                 return;
             }
